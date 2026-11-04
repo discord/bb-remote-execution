@@ -5,6 +5,7 @@ package buildbarn.configuration.bb_runner;
 import "github.com/buildbarn/bb-remote-execution/pkg/proto/configuration/credentials/credentials.proto";
 import "github.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto";
 import "github.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto";
+import "google/protobuf/duration.proto";
 
 option go_package = "github.com/buildbarn/bb-remote-execution/pkg/proto/configuration/bb_runner";
 
@@ -47,6 +48,9 @@ message ApplicationConfiguration {
   // must not be enabled when the same user ID is used for other
   // purposes (e.g., running multiple bb_runners), as this may cause
   // unrelated processes to be killed.
+  //
+  // On Linux, consider using 'action_cgroups' instead, which only
+  // terminates processes that were spawned by build actions.
   bool clean_process_table = 8;
 
   // Was filesystem_writability_checker which has been removed.
@@ -135,4 +139,57 @@ message ApplicationConfiguration {
   // https://github.com/bazelbuild/bazel/blob/master/src/main/java/com/google/devtools/build/lib/exec/local/XcodeLocalEnvProvider.java
   // https://www.smileykeith.com/2021/03/08/locking-xcode-in-bazel/
   map<string, string> apple_xcode_developer_directories = 14;
+
+  // When set, run every build action in a cgroup of its own, and
+  // terminate all processes in that cgroup once the build action
+  // completes. This option is only supported on Linux.
+  ActionCgroupsConfiguration action_cgroups = 15;
+}
+
+message ActionCgroupsConfiguration {
+  // Absolute path of a cgroup v2 directory under which bb_runner
+  // creates a child cgroup for every build action that it runs (e.g.,
+  // "/sys/fs/cgroup/actions"). This directory is created if it does not
+  // exist.
+  //
+  // Build actions are started inside their cgroup directly by making
+  // use of clone3()'s CLONE_INTO_CGROUP flag. This means that there is
+  // no window during which processes spawned by the build action can
+  // escape. Once the build action's main process terminates, or when
+  // the build action times out, all remaining processes in the cgroup
+  // are killed by writing to its "cgroup.kill" file, after which the
+  // cgroup is removed. Unlike 'clean_process_table', this does not
+  // affect processes that were not spawned by the build action, even
+  // if they run as the same user ID. It is also safe to use when this
+  // runner executes multiple build actions concurrently.
+  //
+  // bb_runner needs to be permitted to create cgroups underneath this
+  // directory and move processes into them. This means that it either
+  // needs to run as root, or that the cgroup hierarchy containing this
+  // directory needs to be delegated to bb_runner's user ID. When
+  // running inside a container, this can typically be achieved by
+  // giving the container a private cgroup namespace and a writable
+  // mount of /sys/fs/cgroup.
+  //
+  // This feature requires Linux 5.14 or later.
+  string parent_cgroup_path = 1;
+
+  // If set, the absolute path of a cgroup v2 directory into which
+  // bb_runner moves itself at startup (e.g., "/sys/fs/cgroup/runner").
+  // This directory is created if it does not exist.
+  //
+  // Under cgroup v2's "no internal processes" rule, a cgroup that
+  // has controllers enabled in its "cgroup.subtree_control" file may
+  // not contain any processes itself. When bb_runner is placed in the
+  // root of a delegated cgroup hierarchy, this option can be used to
+  // move it into a leaf cgroup that is a sibling of
+  // 'parent_cgroup_path'. This permits controllers to be enabled for
+  // the build actions' cgroups.
+  string runner_cgroup_path = 2;
+
+  // The maximum amount of time to wait for all processes in a build
+  // action's cgroup to terminate after they have been killed. If this
+  // timeout is exceeded, the build action fails and the cgroup is left
+  // behind. If unset, a timeout of 10 seconds is used.
+  google.protobuf.Duration kill_timeout = 3;
 }

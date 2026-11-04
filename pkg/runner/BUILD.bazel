@@ -3,7 +3,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "runner",
     srcs = [
+        "action_cgroup.go",
         "apple_xcode_resolving_runner.go",
+        "cgroup_v2_action_cgroup_creator_disabled.go",
+        "cgroup_v2_action_cgroup_creator_linux.go",
         "clean_runner.go",
         "local_runner.go",
         "local_runner_darwin.go",
@@ -32,31 +35,39 @@ go_library(
     ] + select({
         "@rules_go//go/platform:android": [
             "//pkg/proto/resourceusage",
+            "@com_github_buildbarn_bb_storage//pkg/clock",
+            "@com_github_google_uuid//:uuid",
             "@org_golang_google_protobuf//types/known/durationpb",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:darwin": [
             "//pkg/proto/resourceusage",
+            "@com_github_buildbarn_bb_storage//pkg/clock",
             "@org_golang_google_protobuf//types/known/durationpb",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:freebsd": [
             "//pkg/proto/resourceusage",
+            "@com_github_buildbarn_bb_storage//pkg/clock",
             "@org_golang_google_protobuf//types/known/durationpb",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:ios": [
             "//pkg/proto/resourceusage",
+            "@com_github_buildbarn_bb_storage//pkg/clock",
             "@org_golang_google_protobuf//types/known/durationpb",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
             "//pkg/proto/resourceusage",
+            "@com_github_buildbarn_bb_storage//pkg/clock",
+            "@com_github_google_uuid//:uuid",
             "@org_golang_google_protobuf//types/known/durationpb",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:windows": [
             "//pkg/proto/resourceusage",
+            "@com_github_buildbarn_bb_storage//pkg/clock",
             "@org_golang_google_protobuf//types/known/durationpb",
             "@org_golang_x_sys//windows",
         ],
@@ -72,7 +83,15 @@ go_test(
         "local_runner_test.go",
         "path_existence_checking_runner_test.go",
         "temporary_directory_symlinking_runner_test.go",
-    ],
+    ] + select({
+        "@rules_go//go/platform:android": [
+            "cgroup_v2_action_cgroup_creator_linux_test.go",
+        ],
+        "@rules_go//go/platform:linux": [
+            "cgroup_v2_action_cgroup_creator_linux_test.go",
+        ],
+        "//conditions:default": [],
+    }),
     deps = [
         ":runner",
         "//internal/mock",
@@ -87,5 +106,13 @@ go_test(
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//types/known/emptypb",
         "@org_uber_go_mock//gomock",
-    ],
+    ] + select({
+        "@rules_go//go/platform:android": [
+            "@com_github_buildbarn_bb_storage//pkg/clock",
+        ],
+        "@rules_go//go/platform:linux": [
+            "@com_github_buildbarn_bb_storage//pkg/clock",
+        ],
+        "//conditions:default": [],
+    }),
 )

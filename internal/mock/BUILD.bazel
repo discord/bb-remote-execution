@@ -349,7 +349,11 @@ gomock(
 gomock(
     name = "runner",
     out = "runner.go",
-    interfaces = ["AppleXcodeSDKRootResolver"],
+    interfaces = [
+        "ActionCgroup",
+        "ActionCgroupCreator",
+        "AppleXcodeSDKRootResolver",
+    ],
     library = "//pkg/runner",
     mockgen_model_library = "@org_uber_go_mock//mockgen/model",
     mockgen_tool = "@org_uber_go_mock//mockgen",
@@ -531,6 +535,7 @@ go_library(
         "//pkg/proto/remoteactionrouter",
         "//pkg/proto/remoteworker",
         "//pkg/proto/runner",
+        "//pkg/runner",
         "//pkg/scheduler/initialsizeclass",
         "//pkg/scheduler/invocation",
         "//pkg/scheduler/platform",
