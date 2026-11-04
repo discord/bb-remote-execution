@@ -13,6 +13,7 @@ import (
 	runner_pb "github.com/buildbarn/bb-remote-execution/pkg/proto/runner"
 	"github.com/buildbarn/bb-remote-execution/pkg/proto/tmp_installer"
 	"github.com/buildbarn/bb-remote-execution/pkg/runner"
+	"github.com/buildbarn/bb-storage/pkg/clock"
 	"github.com/buildbarn/bb-storage/pkg/filesystem"
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
 	"github.com/buildbarn/bb-storage/pkg/global"
@@ -64,11 +65,38 @@ func main() {
 			commandCreator = runner.NewPlainCommandCreator(sysProcAttr)
 		}
 
+		// Run every action in a cgroup of its own, so that any
+		// processes it leaves behind can be killed reliably.
+		var actionCgroupCreator runner.ActionCgroupCreator
+		if actionCgroups := configuration.ActionCgroups; actionCgroups != nil {
+			if actionCgroups.RunnerCgroupPath != "" {
+				if err := runner.MoveCurrentProcessIntoCgroup(actionCgroups.RunnerCgroupPath); err != nil {
+					return util.StatusWrap(err, "Failed to move bb_runner into its own cgroup")
+				}
+			}
+			killTimeout := 10 * time.Second
+			if actionCgroups.KillTimeout != nil {
+				if err := actionCgroups.KillTimeout.CheckValid(); err != nil {
+					return util.StatusWrapWithCode(err, codes.InvalidArgument, "Invalid action cgroups kill timeout")
+				}
+				killTimeout = actionCgroups.KillTimeout.AsDuration()
+			}
+			actionCgroupCreator, err = runner.NewCgroupV2ActionCgroupCreator(
+				actionCgroups.ParentCgroupPath,
+				killTimeout,
+				clock.SystemClock,
+			)
+			if err != nil {
+				return util.StatusWrap(err, "Failed to create action cgroup creator")
+			}
+		}
+
 		r := runner.NewLocalRunner(
 			buildDirectory,
 			buildDirectoryPath,
 			commandCreator,
 			configuration.SetTmpdirEnvironmentVariable,
+			actionCgroupCreator,
 		)
 
 		// Let bb_runner replace temporary directories with symbolic

@@ -71,6 +71,7 @@ type localRunner struct {
 	buildDirectoryPath           *path.Builder
 	commandCreator               CommandCreator
 	setTmpdirEnvironmentVariable bool
+	actionCgroupCreator          ActionCgroupCreator
 }
 
 func (r *localRunner) openLog(logPath string) (filesystem.FileAppender, error) {
@@ -126,12 +127,17 @@ func NewPlainCommandCreator(sysProcAttr *syscall.SysProcAttr) CommandCreator {
 
 // NewLocalRunner returns a Runner capable of running commands on the
 // local system directly.
-func NewLocalRunner(buildDirectory filesystem.Directory, buildDirectoryPath *path.Builder, commandCreator CommandCreator, setTmpdirEnvironmentVariable bool) runner.RunnerServer {
+//
+// If actionCgroupCreator is not nil, every command is run in a cgroup
+// of its own. Any processes that are left behind by the command are
+// terminated once the command completes.
+func NewLocalRunner(buildDirectory filesystem.Directory, buildDirectoryPath *path.Builder, commandCreator CommandCreator, setTmpdirEnvironmentVariable bool, actionCgroupCreator ActionCgroupCreator) runner.RunnerServer {
 	return &localRunner{
 		buildDirectory:               buildDirectory,
 		buildDirectoryPath:           buildDirectoryPath,
 		commandCreator:               commandCreator,
 		setTmpdirEnvironmentVariable: setTmpdirEnvironmentVariable,
+		actionCgroupCreator:          actionCgroupCreator,
 	}
 }
 
@@ -183,8 +189,27 @@ func (r *localRunner) Run(ctx context.Context, request *runner.RunRequest) (*run
 	}
 	cmd.Stderr = stderr
 
+	// Create a cgroup in which the process should be started.
+	var actionCgroup ActionCgroup
+	if r.actionCgroupCreator != nil {
+		actionCgroup, err = r.actionCgroupCreator.CreateActionCgroup()
+		if err != nil {
+			stdout.Close()
+			stderr.Close()
+			return nil, util.StatusWrap(err, "Failed to create cgroup")
+		}
+		actionCgroup.ConfigureCommand(cmd)
+	}
+
 	// Start the subprocess. We can already close the output files
 	// while the process is running.
+	//
+	// openLog() returns instances of *os.File, which os/exec
+	// passes to the subprocess directly. Had they been of any other
+	// type, os/exec would have used a pipe, causing cmd.Wait() to
+	// block until all processes holding on to its write end have
+	// terminated. Processes left behind by the command would then
+	// prevent the cgroup from being destroyed below.
 	err = cmd.Start()
 	stdout.Close()
 	stderr.Close()
@@ -196,14 +221,25 @@ func (r *localRunner) Run(ctx context.Context, request *runner.RunRequest) (*run
 				break
 			}
 		}
-		return nil, util.StatusWrapWithCode(err, code, "Failed to start process")
+		err = util.StatusWrapWithCode(err, code, "Failed to start process")
+	} else if waitErr := cmd.Wait(); waitErr != nil {
+		// Wait for execution to complete. Permit non-zero exit
+		// codes.
+		if _, ok := waitErr.(*exec.ExitError); !ok {
+			err = waitErr
+		}
 	}
 
-	// Wait for execution to complete. Permit non-zero exit codes.
-	if err := cmd.Wait(); err != nil {
-		if _, ok := err.(*exec.ExitError); !ok {
-			return nil, err
+	// Terminate any processes that the command left behind, such
+	// as daemons, or children of a process that was killed due to
+	// the context being cancelled.
+	if actionCgroup != nil {
+		if destroyErr := actionCgroup.Destroy(); destroyErr != nil && err == nil {
+			err = util.StatusWrap(destroyErr, "Failed to destroy cgroup")
 		}
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	// Attach rusage information to the response.
